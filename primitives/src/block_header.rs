@@ -48,8 +48,6 @@ pub struct BlockHeaderRlpPart {
     gas_limit: U256,
     /// Referee hashes
     referee_hashes: Vec<H256>,
-    /// Customized information
-    custom: Vec<Bytes>,
     /// Nonce of the block
     nonce: u64,
 }
@@ -69,7 +67,6 @@ impl PartialEq for BlockHeaderRlpPart {
             && self.adaptive == o.adaptive
             && self.gas_limit == o.gas_limit
             && self.referee_hashes == o.referee_hashes
-            && self.custom == o.custom
     }
 }
 
@@ -102,7 +99,7 @@ impl DerefMut for BlockHeader {
 
 impl MallocSizeOf for BlockHeader {
     fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
-        self.referee_hashes.size_of(ops) + self.custom.size_of(ops)
+        self.referee_hashes.size_of(ops)
     }
 }
 
@@ -161,9 +158,6 @@ impl BlockHeader {
     /// Get the referee hashes field of the header.
     pub fn referee_hashes(&self) -> &Vec<H256> { &self.referee_hashes }
 
-    /// Get the custom data field of the header.
-    pub fn custom(&self) -> &Vec<Bytes> { &self.custom }
-
     /// Get the nonce field of the header.
     pub fn nonce(&self) -> u64 { self.nonce }
 
@@ -207,13 +201,8 @@ impl BlockHeader {
     /// Place this header(except nonce) into an RLP stream `stream`.
     fn stream_rlp_without_nonce(&self, stream: &mut RlpStream) {
         let adaptive_n = if self.adaptive { 1 as u8 } else { 0 as u8 };
-        let list_len = if self.custom.is_empty() {
-            13
-        } else {
-            13 + self.custom.len()
-        };
         stream
-            .begin_list(list_len)
+            .begin_list(13)
             .append(&self.parent_hash)
             .append(&self.height)
             .append(&self.timestamp)
@@ -227,24 +216,13 @@ impl BlockHeader {
             .append(&adaptive_n)
             .append(&self.gas_limit)
             .append_list(&self.referee_hashes);
-
-        if list_len > 13 {
-            for b in &self.custom {
-                stream.append_raw(b, 1);
-            }
-        }
     }
 
     /// Place this header into an RLP stream `stream`.
     fn stream_rlp(&self, stream: &mut RlpStream) {
         let adaptive_n = if self.adaptive { 1 as u8 } else { 0 as u8 };
-        let list_len = if self.custom.is_empty() {
-            14
-        } else {
-            14 + self.custom.len()
-        };
         stream
-            .begin_list(list_len)
+            .begin_list(14)
             .append(&self.parent_hash)
             .append(&self.height)
             .append(&self.timestamp)
@@ -259,12 +237,6 @@ impl BlockHeader {
             .append(&self.gas_limit)
             .append_list(&self.referee_hashes)
             .append(&self.nonce);
-
-        if list_len > 14 {
-            for b in &self.custom {
-                stream.append_raw(b, 1);
-            }
-        }
     }
 
     // TODO: calculate previous_snapshot_root & intermediate_delta_epoch_id in
@@ -272,13 +244,8 @@ impl BlockHeader {
     /// Place this header into an RLP stream `stream` for p2p messages.
     fn stream_wire_rlp(&self, stream: &mut RlpStream) {
         let adaptive_n = if self.adaptive { 1 as u8 } else { 0 as u8 };
-        let list_len = if self.custom.is_empty() {
-            15
-        } else {
-            15 + self.custom.len()
-        };
         stream
-            .begin_list(list_len)
+            .begin_list(15)
             .append(&self.parent_hash)
             .append(&self.height)
             .append(&self.timestamp)
@@ -294,12 +261,6 @@ impl BlockHeader {
             .append_list(&self.referee_hashes)
             .append(&self.nonce)
             .append(&self.state_root_with_aux_info);
-
-        if list_len > 15 {
-            for b in &self.custom {
-                stream.append_raw(b, 1);
-            }
-        }
     }
 
     pub fn size(&self) -> usize {
@@ -324,7 +285,6 @@ pub struct BlockHeaderBuilder {
     adaptive: bool,
     gas_limit: U256,
     referee_hashes: Vec<H256>,
-    custom: Vec<Bytes>,
     nonce: u64,
 }
 
@@ -345,7 +305,6 @@ impl BlockHeaderBuilder {
             adaptive: false,
             gas_limit: U256::zero(),
             referee_hashes: Vec::new(),
-            custom: Vec::new(),
             nonce: 0,
         }
     }
@@ -434,11 +393,6 @@ impl BlockHeaderBuilder {
         self
     }
 
-    pub fn with_custom(&mut self, custom: Vec<Bytes>) -> &mut Self {
-        self.custom = custom;
-        self
-    }
-
     pub fn with_nonce(&mut self, nonce: u64) -> &mut Self {
         self.nonce = nonce;
         self
@@ -460,7 +414,6 @@ impl BlockHeaderBuilder {
                 adaptive: self.adaptive,
                 gas_limit: self.gas_limit,
                 referee_hashes: self.referee_hashes.clone(),
-                custom: self.custom.clone(),
                 nonce: self.nonce,
             },
             hash: None,
@@ -530,29 +483,23 @@ impl Encodable for BlockHeader {
 impl Decodable for BlockHeader {
     fn decode(r: &Rlp) -> Result<Self, DecoderError> {
         let rlp_size = r.as_raw().len();
-        let mut rlp_part = BlockHeaderRlpPart {
-            parent_hash: r.val_at(0)?,
-            height: r.val_at(1)?,
-            timestamp: r.val_at(2)?,
-            author: r.val_at(3)?,
-            transactions_root: r.val_at(4)?,
-            deferred_state_root: r.val_at(5)?,
-            deferred_receipts_root: r.val_at(6)?,
-            deferred_logs_bloom_hash: r.val_at(7)?,
-            blame: r.val_at(8)?,
-            difficulty: r.val_at(9)?,
-            adaptive: r.val_at::<u8>(10)? == 1,
-            gas_limit: r.val_at(11)?,
-            referee_hashes: r.list_at(12)?,
-            custom: vec![],
-            nonce: r.val_at(13)?,
-        };
-        for i in 15..r.item_count()? {
-            rlp_part.custom.push(r.at(i)?.as_raw().to_vec())
-        }
-
         let mut header = BlockHeader {
-            rlp_part,
+            rlp_part: BlockHeaderRlpPart {
+                parent_hash: r.val_at(0)?,
+                height: r.val_at(1)?,
+                timestamp: r.val_at(2)?,
+                author: r.val_at(3)?,
+                transactions_root: r.val_at(4)?,
+                deferred_state_root: r.val_at(5)?,
+                deferred_receipts_root: r.val_at(6)?,
+                deferred_logs_bloom_hash: r.val_at(7)?,
+                blame: r.val_at(8)?,
+                difficulty: r.val_at(9)?,
+                adaptive: r.val_at::<u8>(10)? == 1,
+                gas_limit: r.val_at(11)?,
+                referee_hashes: r.list_at(12)?,
+                nonce: r.val_at(13)?,
+            },
             hash: None,
             pow_quality: U256::zero(),
             approximated_rlp_size: rlp_size,
@@ -561,6 +508,12 @@ impl Decodable for BlockHeader {
         header.compute_hash();
 
         Ok(header)
+    }
+}
+
+impl Encodable for &'static BlockHeader {
+    fn rlp_append(&self, stream: &mut RlpStream) {
+        self.stream_wire_rlp(stream);
     }
 }
 
